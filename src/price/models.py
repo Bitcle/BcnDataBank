@@ -12,6 +12,9 @@ class BtcPrice(models.Model):
     weighted_price = models.DecimalField(max_digits=20, decimal_places=8)
 
 
+# Wilson is mei mei god.
+
+
 class BtcHistory(models.Model):
     date = models.DateField()
     price = models.DecimalField(max_digits=16, decimal_places=8)
