@@ -15,3 +15,9 @@ class BtcPrice(models.Model):
 class BtcHistory(models.Model):
     date = models.DateField()
     price = models.DecimalField(max_digits=16, decimal_places=8)
+
+
+class BtcRate(models.Model):
+    datetime = models.DateTimeField()
+    buy = models.IntegerField()
+    sell = models.IntegerField()
