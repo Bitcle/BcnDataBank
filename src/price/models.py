@@ -2,7 +2,7 @@ from django.db import models
 
 
 class BtcPrice(models.Model):
-    date = models.DateField()
+    date = models.DateTimeField()
     open = models.DecimalField(max_digits=16, decimal_places=8)
     close = models.DecimalField(max_digits=16, decimal_places=8)
     high = models.DecimalField(max_digits=16, decimal_places=8)
