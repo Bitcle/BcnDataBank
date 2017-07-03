@@ -7,7 +7,7 @@ import requests
 
 from django.core.management.base import BaseCommand
 
-from price.models import BtcRate
+from price.models import BtcPrice
 
 
 TIME_ZONE = pytz.timezone('Asia/Taipei')
@@ -17,52 +17,96 @@ class Command(BaseCommand):
     help = 'Get Bitcoin rate from bitoex'
 
     def handle(self, *args, **options):
-        BtcRateFetcher().start()
+        HourlyTicker().start()
 
 
-class Ticker:
-    tick_interval = 1
+def next_hour(dt):
+    next_dt = dt + datetime.timedelta(hours=1)
+    return next_dt.replace(minute=0, second=0, microsecond=0)
 
-    def tick(self, trigger_time):
-        raise NotImplementedError
 
-    def start(self, *args, **kwargs):
+class HourlyTicker:
+
+    def fetch_hourly_data(self, trigger_time):
+        BtcRateFetcher(fetch_until=next_hour(trigger_time)).fetch()
+
+    def start(self):
         while True:
+            now = datetime.datetime.now(TIME_ZONE)
+            next_tick = next_hour(now)
+            sleep_time = (next_tick - now).seconds
+
+            print('HourlyTicker tick at', now)
             t = Thread(
-                target=self.tick,
-                kwargs={'trigger_time': datetime.datetime.now(TIME_ZONE)},
+                target=self.fetch_hourly_data,
+                kwargs={'trigger_time': now},
                 daemon=True
             )
             t.start()
-            time.sleep(self.tick_interval)
+            # 5 seconds is added to ensure it doesn't wake up too early.
+            time.sleep(sleep_time + 5)
 
 
-class BtcRateFetcher(Ticker):
-    tick_interval = 60
+class BtcRateFetcher:
 
-    def tick(self, trigger_time):
-        time_limit = self._next_minute(trigger_time)
-        while datetime.datetime.now(TIME_ZONE) < time_limit:
-            r = requests.get('https://www.bitoex.com/api/v1/get_rate', timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                data_datetime = datetime.datetime.fromtimestamp(data['timestamp'], TIME_ZONE)
-                if not self.validate_data_time(trigger_time, data_datetime):
-                    continue
-                self.save_data(data)
-                print(trigger_time, data)
-                return
+    def __init__(self, fetch_until):
+        self.data = []
+        self.fetch_time = datetime.datetime.now(TIME_ZONE)
+        self.fetch_until = fetch_until
 
-    def _next_minute(self, dt):
-        next_dt = dt + datetime.timedelta(minutes=1)
-        return next_dt.replace(second=0, microsecond=0)
+    def fetch(self):
+        minutes_count = int((self.fetch_until - self.fetch_time).total_seconds()) // 60
+        print('BtcRateFetcher starts fetching...')
+        print('BtcRateFetcher will fetch', minutes_count, 'times')
+        for i in range(minutes_count):
+            if datetime.datetime.now(TIME_ZONE) >= self.fetch_until:
+                break
+            Thread(target=self.query, daemon=True).start()
+            time.sleep(60)
+        self.save_rates()
 
-    def validate_data_time(self, tick_time, data_time):
+    def query(self):
+        retry_time = 0
+        while retry_time < 3:
+            query_data = self._query(timeout=15)
+            if query_data:
+                self.data.append(query_data)
+                print('query result:', query_data)
+                break
+            else:
+                retry_time += 1
+                print('query failed:', 'retry #' + str(retry_time))
+
+    def _query(self, timeout):
+        r = requests.get('https://www.bitoex.com/api/v1/get_rate', timeout=timeout)
+        if r.status_code == 200:
+            data = r.json()
+            data_datetime = datetime.datetime.fromtimestamp(data['timestamp'], TIME_ZONE)
+            if self._validate_data_time(datetime.datetime.now(TIME_ZONE), data_datetime):
+                return data
+            else:
+                return None
+        else:
+            return None
+
+    def _validate_data_time(self, tick_time, data_time):
         if datetime.timedelta() <= abs(data_time - tick_time) < datetime.timedelta(minutes=1):
             return True
         else:
             return False
 
-    def save_data(self, data):
-        data_datetime = datetime.datetime.fromtimestamp(data['timestamp'], TIME_ZONE)
-        BtcRate.objects.create(datetime=data_datetime, buy=data['buy'], sell=data['sell'])
+    def save_rates(self):
+        if not self.data:
+            return
+
+        self.data.sort(key=lambda d: d['timestamp'])
+        for d in self.data:
+            d['avg'] = (d['buy'] + d['sell']) / 2
+        open = self.data[0]['avg']
+        close = self.data[-1]['avg']
+        high = max(self.data, key=lambda d: d['avg'])['avg']
+        low = min(self.data, key=lambda d: d['avg'])['avg']
+
+        BtcPrice.objects.create(
+            time=self.fetch_time.replace(minute=0, second=0, microsecond=0),
+            open=open, close=close, high=high, low=low)
